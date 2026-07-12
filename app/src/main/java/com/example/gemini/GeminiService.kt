@@ -151,7 +151,13 @@ object GeminiService {
             - Primary Carrier Band: ${cell.bandName} (ARFCN: ${cell.arfcn})
             - Signal Quality metrics: RSRP = ${cell.rsrp} dBm, SINR = ${cell.sinr} dB, Grade = ${cell.signalGrade}
             - Timing Advance Range: ${if (cell.timingAdvance > 0) "${cell.timingAdvance} steps (approx. ${(cell.distanceEstimateMeters * 3.28084).toInt()} ft)" else "0 (Immediate)"}
-            - Carrier Aggregation (CA): ${if (cell.activeCarriers.size > 1) "Active (${cell.activeCarriers.size} aggregated channels: $aggregatedBands)" else "Standby (Single channel)"}
+            - Carrier Aggregation (CA): ${
+            when {
+                cell.activeCarriers.size > 1 -> "Active (${cell.activeCarriers.size} aggregated channels: $aggregatedBands)"
+                cell.caIndicated -> "Active (network-reported; component carriers not exposed by this device)"
+                else -> "Standby (Single channel)"
+            }
+        }
             - Nearby Neighbors: $neighborsStr
             
             [GEOLOCATION ENVIRONMENT]

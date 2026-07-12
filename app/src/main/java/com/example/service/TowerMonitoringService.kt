@@ -513,7 +513,11 @@ class TowerMonitoringService : Service() {
         } else {
             cell.bandName
         }
-        val caText = if (cell.activeCarriers.size > 1) " (${cell.activeCarriers.size}CC CA)" else ""
+        val caText = when {
+            cell.activeCarriers.size > 1 -> " (${cell.activeCarriers.size}CC CA)"
+            cell.caIndicated -> " (CA)"
+            else -> ""
+        }
         return "$joinedBands$caText"
     }
 
@@ -553,9 +557,12 @@ class TowerMonitoringService : Service() {
             views.setTextColor(R.id.notif_rsrp, signalColorInt(cell.rsrp))
 
             // Carrier Aggregation badge in header
-            if (cell.activeCarriers.size > 1) {
+            if (cell.activeCarriers.size > 1 || cell.caIndicated) {
                 views.setViewVisibility(R.id.notif_ca_badge, View.VISIBLE)
-                views.setTextViewText(R.id.notif_ca_badge, "${cell.activeCarriers.size}CC CA")
+                views.setTextViewText(
+                    R.id.notif_ca_badge,
+                    if (cell.activeCarriers.size > 1) "${cell.activeCarriers.size}CC CA" else "CA"
+                )
                 views.setInt(
                     R.id.notif_ca_badge, "setBackgroundResource",
                     if (cell.tech.contains("5G")) R.drawable.bg_chip_5g else R.drawable.bg_chip_lte
@@ -644,6 +651,7 @@ class TowerMonitoringService : Service() {
                     val bandNames = cell.activeCarriers.joinToString("+") { it.band.substringBefore(" ") }
                     "Active (${cell.activeCarriers.size}CC: $bandNames)"
                 }
+                cell.caIndicated -> "Active (CA)"
                 else -> "Standby"
             }
         )

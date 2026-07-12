@@ -318,7 +318,7 @@ fun DashboardScreen(
                     elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
-                        val caActive = cell.activeCarriers.size > 1
+                        val caActive = cell.activeCarriers.size > 1 || cell.caIndicated
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -350,7 +350,11 @@ fun DashboardScreen(
                                     .padding(horizontal = 8.dp, vertical = 4.dp)
                             ) {
                                 Text(
-                                    text = if (caActive) "${cell.activeCarriers.size}CC ACTIVE" else "STANDBY",
+                                    text = when {
+                                        cell.activeCarriers.size > 1 -> "${cell.activeCarriers.size}CC ACTIVE"
+                                        caActive -> "CA ACTIVE"
+                                        else -> "STANDBY"
+                                    },
                                     color = if (caActive) tl.emerald else tl.textSecondary,
                                     style = MaterialTheme.typography.labelSmall,
                                     fontWeight = FontWeight.Bold
@@ -400,7 +404,11 @@ fun DashboardScreen(
                                 Spacer(modifier = Modifier.height(6.dp))
                                 Text(
                                     text = if (caActive) {
-                                        "Device is actively aggregating ${cell.activeCarriers.size} frequency bands. This unlocks wider aggregate bandwidth for enhanced gigabit-range throughput and signal redundancy."
+                                        if (cell.activeCarriers.size > 1) {
+                                            "Device is actively aggregating ${cell.activeCarriers.size} frequency bands. This unlocks wider aggregate bandwidth for enhanced gigabit-range throughput and signal redundancy."
+                                        } else {
+                                            "The network reports carrier aggregation is active, but this device does not expose per-carrier details to apps."
+                                        }
                                     } else {
                                         "Using a single carrier channel. Secondary bands are asleep. Cellular base stations transition secondary channels to standby automatically when inactive to extend battery life, activating them on-demand."
                                     },
@@ -1074,7 +1082,7 @@ fun InteractiveSignalTrendWidget(
                 }
 
                 // Small badge displaying active carriers size
-                if (cell.activeCarriers.size > 1) {
+                if (cell.activeCarriers.size > 1 || cell.caIndicated) {
                     Box(
                         modifier = Modifier
                             .clip(RoundedCornerShape(4.dp))
@@ -1082,7 +1090,7 @@ fun InteractiveSignalTrendWidget(
                             .padding(horizontal = 6.dp, vertical = 2.dp)
                     ) {
                         Text(
-                            text = "${cell.activeCarriers.size}CC Aggregated",
+                            text = if (cell.activeCarriers.size > 1) "${cell.activeCarriers.size}CC Aggregated" else "CA Active",
                             color = tl.emerald,
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.Bold

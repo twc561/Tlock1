@@ -29,9 +29,21 @@ class TelephonyTracker(
     private var pollIntervalSeconds = 3
     private var gnbBitLength = 24 // default 24-bit for T-Mobile 310-260
 
-    // Callback objects for API 31+
+    // Callback objects for API 31+. The physical-channel listener is registered
+    // separately from the others: it needs READ_PRECISE_PHONE_STATE (privileged),
+    // and registerTelephonyCallback throws for the whole bundle if any listener
+    // interface is not permitted.
     private var telephonyCallback: Any? = null
+    private var physicalChannelCallback: Any? = null
+    @Volatile
     private var physicalChannelConfigs: List<PhysicalChannelConfig> = emptyList()
+
+    // Last network-reported state from TelephonyDisplayInfo, kept in fields so the
+    // periodic poll rebuild doesn't erase it.
+    @Volatile
+    private var overrideTech: String? = null
+    @Volatile
+    private var networkIndicatedCa = false
 
     // Simulation fields
     private var isSimulationMode = true
@@ -140,8 +152,7 @@ class TelephonyTracker(
                 val callback = object : TelephonyCallback(),
                     TelephonyCallback.CellInfoListener,
                     TelephonyCallback.DisplayInfoListener,
-                    TelephonyCallback.SignalStrengthsListener,
-                    TelephonyCallback.PhysicalChannelConfigListener {
+                    TelephonyCallback.SignalStrengthsListener {
 
                     override fun onCellInfoChanged(cellInfo: MutableList<CellInfo>) {
                         parseCellInfoList(cellInfo)
@@ -154,13 +165,29 @@ class TelephonyTracker(
                     override fun onSignalStrengthsChanged(signalStrength: SignalStrength) {
                         updateSignalStrength(signalStrength)
                     }
-
-                    override fun onPhysicalChannelConfigChanged(configs: List<PhysicalChannelConfig>) {
-                        updatePhysicalChannelConfigs(configs)
-                    }
                 }
                 telephonyManager.registerTelephonyCallback(context.mainExecutor, callback)
                 telephonyCallback = callback
+
+                // PhysicalChannelConfigListener requires READ_PRECISE_PHONE_STATE, which
+                // is only grantable to privileged/carrier apps. Register it on its own so
+                // the expected SecurityException doesn't take down the listeners above.
+                try {
+                    val pccCallback = object : TelephonyCallback(),
+                        TelephonyCallback.PhysicalChannelConfigListener {
+                        override fun onPhysicalChannelConfigChanged(configs: List<PhysicalChannelConfig>) {
+                            updatePhysicalChannelConfigs(configs)
+                        }
+                    }
+                    telephonyManager.registerTelephonyCallback(context.mainExecutor, pccCallback)
+                    physicalChannelCallback = pccCallback
+                } catch (e: SecurityException) {
+                    Log.i(
+                        "TelephonyTracker",
+                        "PhysicalChannelConfig unavailable (READ_PRECISE_PHONE_STATE not held); " +
+                                "CA will be detected via DisplayInfo/ServiceState fallbacks"
+                    )
+                }
             }
         } catch (e: SecurityException) {
             Log.e("TelephonyTracker", "Permission denied for telephony callback", e)
@@ -178,14 +205,17 @@ class TelephonyTracker(
 
     private fun unregisterRealListeners() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            telephonyCallback?.let {
-                try {
-                    telephonyManager.unregisterTelephonyCallback(it as TelephonyCallback)
-                } catch (e: Exception) {
-                    Log.e("TelephonyTracker", "Error unregistering callback", e)
+            listOf(telephonyCallback, physicalChannelCallback).forEach { cb ->
+                cb?.let {
+                    try {
+                        telephonyManager.unregisterTelephonyCallback(it as TelephonyCallback)
+                    } catch (e: Exception) {
+                        Log.e("TelephonyTracker", "Error unregistering callback", e)
+                    }
                 }
             }
             telephonyCallback = null
+            physicalChannelCallback = null
         }
     }
 
@@ -397,20 +427,32 @@ class TelephonyTracker(
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && physicalChannelConfigs.isNotEmpty()) {
             val carriers = physicalChannelConfigs.mapNotNull { config ->
                 try {
-                    val bandInt = config.band
                     val arfcn = config.downlinkChannelNumber
-                    val networkType = config.networkType
-                    val connectionStatus = config.connectionStatus
-                    
-                    val typeStr = if (connectionStatus == 1) "PCC" else "SCC"
-                    
-                    val isNr = (networkType == TelephonyManager.NETWORK_TYPE_NR)
-                    val bandStr = if (isNr) {
-                        BandFrequencyMapper.decodeNrArfcn(arfcn).first
+                    val isNr = (config.networkType == TelephonyManager.NETWORK_TYPE_NR)
+
+                    val typeStr = if (config.connectionStatus == PhysicalChannelConfig.CONNECTION_PRIMARY_SERVING) {
+                        "PCC"
                     } else {
-                        BandFrequencyMapper.decodeLteEarfcn(arfcn).first
+                        "SCC"
                     }
-                    
+
+                    // Prefer the band number the modem reports over the ARFCN heuristic
+                    val decoded = if (isNr) {
+                        BandFrequencyMapper.decodeNrArfcn(arfcn)
+                    } else {
+                        BandFrequencyMapper.decodeLteEarfcn(arfcn)
+                    }
+                    val bandStr = if (config.band > 0) {
+                        val prefix = if (isNr) "n" else "B"
+                        if (decoded.second > 0) {
+                            "$prefix${config.band} (${decoded.second.toInt()} MHz)"
+                        } else {
+                            "$prefix${config.band}"
+                        }
+                    } else {
+                        decoded.first
+                    }
+
                     val matchedRsrp = if (typeStr == "PCC") {
                         servingRsrp
                     } else {
@@ -435,66 +477,22 @@ class TelephonyTracker(
             }
         }
 
-        // 2. Fallback: If activeCarriersList only has the PCC (size == 1), check ServiceState.cellBandwidths to find aggregated carriers!
+        // 2. Fallback: PhysicalChannelConfig needs a privileged permission, so on most
+        // devices CA has to be inferred from ServiceState.cellBandwidths, which holds one
+        // entry per aggregated component carrier. Band/ARFCN/RSRP of the SCCs are not
+        // exposed there, so report the real bandwidth and mark the rest as unreported
+        // rather than inventing values.
         if (activeCarriersList.size == 1) {
             val bandwidths = getCellBandwidthsFromServiceState()
-            if (bandwidths != null && bandwidths.size > 1) {
-                val isNr = (servingCell is CellInfoNr)
-                val operator = telephonyManager.networkOperatorName.lowercase()
-                val isTMobile = operator.contains("t-mobile") || operator.contains("tmo") || builder.mcc == "310" && builder.mnc == "260"
-                
-                for (i in 1 until bandwidths.size) {
-                    val sccBand = when {
-                        isNr -> {
-                            if (isTMobile) {
-                                when (i % 3) {
-                                    1 -> "n41 (2.5 GHz Mid-Band)"
-                                    2 -> "n25 (1900 MHz)"
-                                    else -> "n71 (600 MHz)"
-                                }
-                            } else {
-                                when (i % 2) {
-                                    1 -> "n77 (3.7 GHz C-Band)"
-                                    else -> "n5 (850 MHz)"
-                                }
-                            }
-                        }
-                        else -> {
-                            if (isTMobile) {
-                                when (i % 4) {
-                                    1 -> "B2 (1900 MHz)"
-                                    2 -> "B66 (1700/2100 MHz AWS-3)"
-                                    3 -> "B12 (700 MHz)"
-                                    else -> "B41 (2500 MHz TDD)"
-                                }
-                            } else {
-                                when (i % 3) {
-                                    1 -> "B2 (1900 MHz)"
-                                    2 -> "B4 (1700/2100 MHz AWS)"
-                                    else -> "B5 (850 MHz)"
-                                }
-                            }
-                        }
-                    }
-                    
-                    val sccArfcn = when (sccBand) {
-                        "n41 (2.5 GHz Mid-Band)" -> 518000
-                        "n25 (1900 MHz)" -> 390000
-                        "n71 (600 MHz)" -> 126800
-                        "n77 (3.7 GHz C-Band)" -> 630000
-                        "n5 (850 MHz)" -> 173800
-                        "B2 (1900 MHz)" -> 900
-                        "B66 (1700/2100 MHz AWS-3)" -> 66436
-                        "B12 (700 MHz)" -> 5010
-                        "B41 (2500 MHz TDD)" -> 40620
-                        else -> 0
-                    }
-                    
+                ?.filter { it > 0 }
+                .orEmpty()
+            if (bandwidths.size > 1) {
+                bandwidths.drop(1).forEach { bwKhz ->
                     activeCarriersList.add(
                         CarrierInfo(
-                            band = sccBand,
-                            arfcn = sccArfcn,
-                            rsrp = sanitizeSignal(servingRsrp - (4 * i)),
+                            band = "SCC ${bwKhz / 1000} MHz (band not reported)",
+                            arfcn = 0,
+                            rsrp = sanitizeSignal(servingRsrp),
                             type = "SCC"
                         )
                     )
@@ -504,6 +502,11 @@ class TelephonyTracker(
 
         builder.activeCarriers = activeCarriersList
 
+        // Re-apply the last display-info override so the periodic poll rebuild doesn't
+        // erase the network-reported NSA/CA state between events.
+        overrideTech?.let { if (builder.tech == "4G LTE") builder.tech = it }
+        builder.caIndicated = networkIndicatedCa
+
         // Update current state
         val updatedCell = builder.build()
         _cellState.value = updatedCell
@@ -511,14 +514,24 @@ class TelephonyTracker(
 
     private fun updateDisplayInfo(displayInfo: TelephonyDisplayInfo) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            val current = _cellState.value
-            val techOverride = when (displayInfo.overrideNetworkType) {
+            val override = displayInfo.overrideNetworkType
+            overrideTech = when (override) {
                 TelephonyDisplayInfo.OVERRIDE_NETWORK_TYPE_NR_NSA -> "5G NSA"
                 TelephonyDisplayInfo.OVERRIDE_NETWORK_TYPE_NR_ADVANCED -> "5G NSA (Adv)"
-                else -> current.tech
+                else -> null
             }
-            if (techOverride != current.tech) {
-                _cellState.value = current.copy(tech = techOverride)
+            // LTE_CA is the network's explicit "carrier aggregation active" flag
+            // (deprecated on S+ in favor of PhysicalChannelConfig, but that needs a
+            // privileged permission and LTE_CA is still delivered on most devices).
+            // NR_ADVANCED likewise implies aggregated NR carriers.
+            @Suppress("DEPRECATION")
+            networkIndicatedCa = override == TelephonyDisplayInfo.OVERRIDE_NETWORK_TYPE_LTE_CA ||
+                    override == TelephonyDisplayInfo.OVERRIDE_NETWORK_TYPE_NR_ADVANCED
+
+            val current = _cellState.value
+            val newTech = overrideTech ?: current.tech
+            if (newTech != current.tech || networkIndicatedCa != current.caIndicated) {
+                _cellState.value = current.copy(tech = newTech, caIndicated = networkIndicatedCa)
             }
         }
     }
@@ -805,6 +818,7 @@ class CellModelBuilder {
     var distanceEstimateMeters: Double = 0.0
     var neighbors: List<NeighborCell> = emptyList()
     var activeCarriers: List<CarrierInfo> = emptyList()
+    var caIndicated: Boolean = false
 
     fun build(): CellModel {
         val (grade, color, desc) = when {
@@ -850,7 +864,8 @@ class CellModelBuilder {
             signalGradeColorHex = color,
             description = desc,
             neighbors = neighbors,
-            activeCarriers = activeCarriers.ifEmpty { listOf(CarrierInfo(band = bandName, arfcn = arfcn, rsrp = rsrp, type = "PCC")) }
+            activeCarriers = activeCarriers.ifEmpty { listOf(CarrierInfo(band = bandName, arfcn = arfcn, rsrp = rsrp, type = "PCC")) },
+            caIndicated = caIndicated
         )
     }
 }

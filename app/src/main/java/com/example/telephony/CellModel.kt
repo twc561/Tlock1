@@ -29,6 +29,9 @@ data class CellModel(
     val signalGradeColorHex: Long = 0xFFE57373, // Color hex
     val description: String = "",
     val activeCarriers: List<CarrierInfo> = emptyList(),
+    // True when the network reports carrier aggregation (e.g. TelephonyDisplayInfo
+    // LTE_CA/NR_ADVANCED) even if the component carriers can't be enumerated.
+    val caIndicated: Boolean = false,
     val neighbors: List<NeighborCell> = emptyList()
 )
 
