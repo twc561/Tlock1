@@ -64,6 +64,8 @@ fun DashboardScreen(
     rsrpHistory: List<Int>,
     logs: List<CellLog>,
     towerSource: String = "Unmapped",
+    speedTests: List<SpeedTester.SpeedResult> = emptyList(),
+    onSpeedTestCompleted: (SpeedTester.SpeedResult) -> Unit = {},
     onSnapshotClick: () -> Unit
 ) {
     val tl = TlTheme.colors
@@ -559,12 +561,8 @@ fun DashboardScreen(
 
                         // One-tap throughput test recorded against the current radio config
                         val speedContext = LocalContext.current
-                        val speedPrefs = remember {
-                            speedContext.getSharedPreferences("TowerLockPrefs", Context.MODE_PRIVATE)
-                        }
                         val speedScope = rememberCoroutineScope()
                         var isSpeedTesting by remember { mutableStateOf(false) }
-                        var speedHistory by remember { mutableStateOf(SpeedTester.loadResults(speedPrefs)) }
 
                         Spacer(modifier = Modifier.height(10.dp))
                         Button(
@@ -580,8 +578,7 @@ fun DashboardScreen(
                                     speedScope.launch {
                                         try {
                                             val result = SpeedTester.run(label)
-                                            SpeedTester.saveResult(speedPrefs, result)
-                                            speedHistory = SpeedTester.loadResults(speedPrefs)
+                                            onSpeedTestCompleted(result)
                                         } catch (e: Exception) {
                                             android.widget.Toast.makeText(
                                                 speedContext,
@@ -607,10 +604,10 @@ fun DashboardScreen(
                             )
                         }
 
-                        if (speedHistory.isNotEmpty()) {
+                        if (speedTests.isNotEmpty()) {
                             Spacer(modifier = Modifier.height(8.dp))
                             val timeFmt = remember { SimpleDateFormat("MMM d h:mm a", Locale.US) }
-                            speedHistory.take(3).forEach { result ->
+                            speedTests.take(3).forEach { result ->
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()

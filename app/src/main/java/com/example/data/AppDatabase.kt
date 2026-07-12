@@ -4,14 +4,15 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 @Database(
-    entities = [CellLog::class, TowerDbEntry::class],
-    version = 2,
+    entities = [CellLog::class, TowerDbEntry::class, SpeedTestEntity::class],
+    version = 3,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -30,6 +31,27 @@ abstract class AppDatabase : RoomDatabase() {
         @Volatile
         private var INSTANCE: AppDatabase? = null
 
+        /**
+         * v2 -> v3: capacity/geometry columns on cell_logs and the speed_tests
+         * table. A real migration, so an upgrade never wipes the (potentially
+         * large, hand-collected) tower and log history.
+         */
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE cell_logs ADD COLUMN timingAdvanceMeters REAL NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE cell_logs ADD COLUMN caCarrierCount INTEGER NOT NULL DEFAULT 1")
+                db.execSQL("ALTER TABLE cell_logs ADD COLUMN aggregateBandwidthKhz INTEGER NOT NULL DEFAULT 0")
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `speed_tests` (" +
+                            "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                            "`timestamp` INTEGER NOT NULL, " +
+                            "`downloadMbps` REAL NOT NULL, " +
+                            "`latencyMs` INTEGER NOT NULL, " +
+                            "`label` TEXT NOT NULL)"
+                )
+            }
+        }
+
         fun getDatabase(context: Context, scope: CoroutineScope): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -38,6 +60,9 @@ abstract class AppDatabase : RoomDatabase() {
                     "towerlock_database"
                 )
                 .addCallback(DatabaseCallback(scope))
+                .addMigrations(MIGRATION_2_3)
+                // Destructive fallback only fires for paths with no migration
+                // (pre-v2 installs); v2 -> v3 uses MIGRATION_2_3 above.
                 .fallbackToDestructiveMigration()
                 .build()
                 .also { INSTANCE = it }

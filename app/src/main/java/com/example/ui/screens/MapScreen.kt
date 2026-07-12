@@ -29,15 +29,19 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import com.example.analysis.TowerObservations
 import com.example.data.CellLog
 import com.example.data.TowerDbEntry
 import com.example.location.LocationTracker
 import com.example.telephony.CellModel
 import com.example.ui.theme.TlTheme
 import org.osmdroid.config.Configuration
+import org.osmdroid.events.DelayedMapListener
 import org.osmdroid.events.MapEventsReceiver
+import org.osmdroid.events.MapListener
+import org.osmdroid.events.ScrollEvent
+import org.osmdroid.events.ZoomEvent
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
+import org.osmdroid.util.BoundingBox
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.MapEventsOverlay
@@ -50,8 +54,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.filled.Grain
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.ui.unit.sp
-import java.text.DateFormat
-import java.util.Date
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -64,7 +66,8 @@ fun MapScreen(
     towerLon: Double?,
     towerAddress: String,
     confidenceMeters: Int,
-    allTowers: List<TowerDbEntry>,
+    towerCount: Int = 0,
+    loadTowersInBounds: suspend (minLat: Double, maxLat: Double, minLon: Double, maxLon: Double) -> List<TowerDbEntry> = { _, _, _, _ -> emptyList() },
     focusLat: Double? = null,
     focusLon: Double? = null,
     onFocusConsumed: () -> Unit = {},
@@ -78,7 +81,20 @@ fun MapScreen(
 
     var isPlacingTower by remember { mutableStateOf(false) }
     var showHeatmap by remember { mutableStateOf(false) }
+    var heatmapBand by remember { mutableStateOf<String?>(null) }
     val isPlacingTowerState = rememberUpdatedState(isPlacingTower)
+
+    // Towers are paged in by map viewport instead of loading the whole table:
+    // the imported Florida extract can hold tens of thousands of rows.
+    var visibleTowers by remember { mutableStateOf<List<TowerDbEntry>>(emptyList()) }
+    var viewportBounds by remember { mutableStateOf<BoundingBox?>(null) }
+    var currentZoom by remember { mutableStateOf(15.5) }
+
+    LaunchedEffect(viewportBounds) {
+        viewportBounds?.let { bb ->
+            visibleTowers = loadTowersInBounds(bb.latSouth, bb.latNorth, bb.lonWest, bb.lonEast)
+        }
+    }
     var pendingTowerPoint by remember { mutableStateOf<GeoPoint?>(null) }
     var pendingAddressInput by remember { mutableStateOf("") }
     var isResolvingPendingAddress by remember { mutableStateOf(false) }
@@ -105,8 +121,10 @@ fun MapScreen(
         val distance: Float? = null
     )
 
-    // Compute the list of all plotable towers with their calculated distances from the user
-    val plotTowers = remember(cell, userLat, userLon, towerLat, towerLon, towerAddress, confidenceMeters, allTowers) {
+    // Compute the list of plotable towers with their calculated distances from
+    // the user; the carousel caps at the nearest 25 so a dense imported area
+    // doesn't lay out hundreds of cards.
+    val plotTowers = remember(cell, userLat, userLon, towerLat, towerLon, towerAddress, confidenceMeters, visibleTowers) {
         val list = mutableListOf<PlotTower>()
 
         // 1. Add serving tower (estimated or active)
@@ -131,8 +149,8 @@ fun MapScreen(
             )
         }
 
-        // 2. Add logged/known database towers
-        allTowers.forEach { tower ->
+        // 2. Add known database towers currently in the viewport
+        visibleTowers.forEach { tower ->
             val exists = list.any { it.cid == tower.cid && it.mcc == tower.mcc && it.mnc == tower.mnc }
             if (!exists) {
                 val dist = if (userLat != null && userLon != null) {
@@ -160,7 +178,7 @@ fun MapScreen(
         if (userLat != null && userLon != null) {
             list.sortBy { it.distance ?: Float.MAX_VALUE }
         }
-        list
+        list.take(25)
     }
 
     // Find the closest connection point
@@ -203,6 +221,26 @@ fun MapScreen(
                         GeoPoint(37.7749, -122.4194)
                     }
                     controller.setCenter(startPoint)
+
+                    // Page towers in for the visible region, debounced so a fling
+                    // doesn't fire a query per frame.
+                    addMapListener(DelayedMapListener(object : MapListener {
+                        override fun onScroll(event: ScrollEvent?): Boolean {
+                            viewportBounds = boundingBox
+                            currentZoom = zoomLevelDouble
+                            return true
+                        }
+
+                        override fun onZoom(event: ZoomEvent?): Boolean {
+                            viewportBounds = boundingBox
+                            currentZoom = zoomLevelDouble
+                            return true
+                        }
+                    }, 250))
+                    addOnFirstLayoutListener { _, _, _, _, _ ->
+                        viewportBounds = boundingBox
+                        currentZoom = zoomLevelDouble
+                    }
                     mapViewRef = this
                 }
             },
@@ -321,12 +359,15 @@ fun MapScreen(
                     }
                 }
 
-                // 4.5. Signal heatmap: recent logged sample points colored by RSRP.
+                // 4.5. Signal heatmap: recent logged sample points colored by RSRP,
+                // optionally restricted to a single band via the filter chips.
                 // Newest logs first (query is timestamp DESC); capped to keep the
                 // overlay pass cheap on big histories.
                 if (showHeatmap) {
+                    val selectedBand = heatmapBand
                     logs.asSequence()
                         .filter { it.lat != 0.0 || it.lon != 0.0 }
+                        .filter { selectedBand == null || it.band.startsWith(selectedBand) }
                         .take(400)
                         .forEach { log ->
                             val fill = when {
@@ -345,22 +386,60 @@ fun MapScreen(
                         }
                 }
 
-                // 5. Render All Logged / Known Towers
-                allTowers.forEach { tower ->
+                // 5. Render viewport towers, clustering by a zoom-scaled grid when
+                // the imported database would otherwise flood the map with markers.
+                fun addTowerMarker(tower: TowerDbEntry) {
                     // Exclude serving cell if already drawn
-                    if (tower.lat != towerLat || tower.lon != towerLon) {
-                        val loggedTowerMarker = Marker(mapView).apply {
-                            position = GeoPoint(tower.lat, tower.lon)
-                            title = "${tower.radio} Tower (${tower.cid})"
-                            setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-                            setOnMarkerClickListener { _, _ ->
-                                selectedTower = tower
-                                isBottomSheetOpen = true
-                                true
+                    if (tower.lat == towerLat && tower.lon == towerLon) return
+                    val loggedTowerMarker = Marker(mapView).apply {
+                        position = GeoPoint(tower.lat, tower.lon)
+                        title = "${tower.radio} Tower (${tower.cid})"
+                        setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+                        setOnMarkerClickListener { _, _ ->
+                            selectedTower = tower
+                            isBottomSheetOpen = true
+                            true
+                        }
+                    }
+                    mapView.overlays.add(loggedTowerMarker)
+                }
+
+                val clusterGridDeg = when {
+                    currentZoom >= 13.5 -> 0.0
+                    currentZoom >= 12.0 -> 0.02
+                    currentZoom >= 10.0 -> 0.08
+                    else -> 0.3
+                }
+                if (clusterGridDeg == 0.0 || visibleTowers.size <= 60) {
+                    visibleTowers.forEach { addTowerMarker(it) }
+                } else {
+                    visibleTowers
+                        .groupBy {
+                            Pair(
+                                (it.lat / clusterGridDeg).toInt(),
+                                (it.lon / clusterGridDeg).toInt()
+                            )
+                        }
+                        .forEach { (_, group) ->
+                            if (group.size == 1) {
+                                addTowerMarker(group.first())
+                            } else {
+                                val cLat = group.sumOf { it.lat } / group.size
+                                val cLon = group.sumOf { it.lon } / group.size
+                                val clusterMarker = Marker(mapView).apply {
+                                    position = GeoPoint(cLat, cLon)
+                                    title = "${group.size} towers — tap to zoom"
+                                    icon = clusterIcon(mapView.context, group.size, skyArgb)
+                                    setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+                                    setOnMarkerClickListener { marker, mv ->
+                                        mv.controller.animateTo(marker.position)
+                                        mv.controller.setZoom(mv.zoomLevelDouble + 2.0)
+                                        true
+                                    }
+                                }
+                                mapView.overlays.add(clusterMarker)
                             }
                         }
-                        mapView.overlays.add(loggedTowerMarker)
-                    }
                 }
 
                 mapView.invalidate()
@@ -379,12 +458,45 @@ fun MapScreen(
             Text(
                 text = when {
                     isPlacingTower -> "Tap the map where the tower actually is"
-                    towerLat != null -> "Viewing serving & ${allTowers.size} logged towers"
+                    towerCount > 0 -> "${visibleTowers.size} of $towerCount towers in view"
+                    towerLat != null -> "Viewing serving tower"
                     else -> "Awaiting cell tower lock..."
                 },
                 color = tl.textPrimary,
                 style = MaterialTheme.typography.labelMedium
             )
+        }
+
+        // Band filter chips for the heatmap overlay
+        if (showHeatmap) {
+            val heatmapBands = remember(logs) {
+                logs.map { it.band.substringBefore(" ") }
+                    .filter { it.isNotBlank() && it != "Unknown" }
+                    .distinct()
+                    .sorted()
+            }
+            LazyRow(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 60.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                contentPadding = PaddingValues(horizontal = 16.dp)
+            ) {
+                item {
+                    FilterChip(
+                        selected = heatmapBand == null,
+                        onClick = { heatmapBand = null },
+                        label = { Text("All bands") }
+                    )
+                }
+                items(heatmapBands) { band ->
+                    FilterChip(
+                        selected = heatmapBand == band,
+                        onClick = { heatmapBand = if (heatmapBand == band) null else band },
+                        label = { Text(band) }
+                    )
+                }
+            }
         }
 
         // FAB: toggle the drive-log signal heatmap overlay.
@@ -704,84 +816,8 @@ fun MapScreen(
                         DetailItem(label = "MCC-MNC", value = "${selectedTower!!.mcc}-${selectedTower!!.mnc}")
                     }
 
-                    // Per-tower history built from this device's own observations:
-                    // logs are grouped by physical tower (eNB/gNB decoded from the CID).
-                    val tower = selectedTower!!
-                    val gnbBits = remember {
-                        context.getSharedPreferences("TowerLockPrefs", Context.MODE_PRIVATE)
-                            .getInt("gnb_bits", 24)
-                    }
-                    val towerNodeb = remember(tower) {
-                        if (tower.radio == "NR") tower.cid shr (36 - gnbBits) else tower.cid shr 8
-                    }
-                    val towerLogs = remember(tower, logs) {
-                        if (towerNodeb > 0) logs.filter { it.nodebId == towerNodeb } else emptyList()
-                    }
-                    val summary = remember(towerLogs) { TowerObservations.summarize(towerLogs) }
-
-                    if (summary != null) {
-                        Spacer(modifier = Modifier.height(16.dp))
-                        HorizontalDivider(color = tl.surfaceVariant)
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Text(
-                            text = "YOUR OBSERVATIONS (${summary.observationCount})",
-                            style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 1.2.sp),
-                            color = tl.textMuted,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = "Bands seen: " + summary.bands.joinToString { "${it.first} ×${it.second}" },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = tl.textSecondary
-                        )
-                        Text(
-                            text = "Signal: avg ${summary.avgRsrp} dBm • best ${summary.bestRsrp} dBm • " +
-                                    summary.techs.joinToString("/"),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = tl.textSecondary
-                        )
-                        val dateFmt = remember { DateFormat.getDateInstance(DateFormat.MEDIUM) }
-                        Text(
-                            text = "First seen ${dateFmt.format(Date(summary.firstSeen))} • " +
-                                    "last ${dateFmt.format(Date(summary.lastSeen))}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = tl.textSecondary
-                        )
-
-                        val obsPoints = remember(towerLogs) {
-                            towerLogs.map {
-                                TowerObservations.Observation(it.lat, it.lon, it.rsrp, it.sectorId)
-                            }
-                        }
-                        if (obsPoints.size >= 3) {
-                            val refined = remember(obsPoints) { TowerObservations.refinePosition(obsPoints) }
-                            refined?.let { (rlat, rlon) ->
-                                val deltaM = TowerObservations.distanceMeters(rlat, rlon, tower.lat, tower.lon)
-                                Text(
-                                    text = String.format(
-                                        Locale.US,
-                                        "Observation-fit position: %.5f, %.5f (Δ %.0f m from mapped point)",
-                                        rlat, rlon, deltaM
-                                    ),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = tl.sky
-                                )
-                            }
-                            val bearings = remember(obsPoints) {
-                                TowerObservations.sectorBearings(tower.lat, tower.lon, obsPoints)
-                            }
-                            if (bearings.isNotEmpty()) {
-                                Text(
-                                    text = "Sectors: " + bearings.joinToString {
-                                        "S${it.sectorId} faces ${it.compass} (${it.bearingDegrees}°, ${it.samples} obs)"
-                                    },
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = tl.sky
-                                )
-                            }
-                        }
-                    }
+                    // Per-tower history from this device's own observations
+                    TowerObservationSection(tower = selectedTower!!, logs = logs)
 
                     Spacer(modifier = Modifier.height(24.dp))
 
@@ -843,6 +879,32 @@ fun MapScreen(
             }
         }
     }
+}
+
+/** Circle-with-count bitmap used for cluster markers. */
+private fun clusterIcon(
+    context: Context,
+    count: Int,
+    colorArgb: Int
+): android.graphics.drawable.BitmapDrawable {
+    val size = 96
+    val bitmap = android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.ARGB_8888)
+    val canvas = android.graphics.Canvas(bitmap)
+    val circlePaint = Paint().apply {
+        color = colorArgb
+        isAntiAlias = true
+    }
+    canvas.drawCircle(size / 2f, size / 2f, size / 2f - 4f, circlePaint)
+    val textPaint = Paint().apply {
+        color = android.graphics.Color.WHITE
+        isAntiAlias = true
+        textAlign = Paint.Align.CENTER
+        typeface = android.graphics.Typeface.DEFAULT_BOLD
+        textSize = if (count >= 100) 34f else 42f
+    }
+    val y = size / 2f - (textPaint.descent() + textPaint.ascent()) / 2f
+    canvas.drawText(count.toString(), size / 2f, y, textPaint)
+    return android.graphics.drawable.BitmapDrawable(context.resources, bitmap)
 }
 
 @Composable

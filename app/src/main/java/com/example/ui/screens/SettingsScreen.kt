@@ -18,6 +18,7 @@ import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.*
@@ -44,7 +45,8 @@ fun SettingsScreen(
     onBackupDb: () -> Unit,
     onRestoreDb: () -> Unit,
     onImportCsv: (Uri, Boolean) -> Unit,
-    importStatus: String? = null
+    importStatus: String? = null,
+    onExport: (String) -> Unit = {}
 ) {
     val tl = TlTheme.colors
     val context = LocalContext.current
@@ -748,6 +750,52 @@ fun SettingsScreen(
                             color = tl.sky,
                             fontWeight = FontWeight.SemiBold
                         )
+                    }
+                }
+
+                HorizontalDivider(color = tl.surfaceVariant)
+
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        text = "Export & Share",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = tl.textPrimary
+                    )
+                    Text(
+                        text = "Tower database as KML (opens in Google Earth) or CSV, and speed-test " +
+                                "history as CSV. Log exports live on the Logs tab.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = tl.textSecondary
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        listOf(
+                            "Towers KML" to "towers_kml",
+                            "Towers CSV" to "towers_csv",
+                            "Speed CSV" to "speed_csv"
+                        ).forEach { (label, kind) ->
+                            Button(
+                                onClick = { onExport(kind) },
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = tl.surfaceVariant,
+                                    contentColor = tl.textPrimary
+                                ),
+                                shape = RoundedCornerShape(8.dp),
+                                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 10.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Share,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(label, fontSize = 11.sp)
+                            }
+                        }
                     }
                 }
             }

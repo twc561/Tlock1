@@ -60,6 +60,45 @@ interface CellDao {
     @Query("SELECT * FROM tower_db_entries")
     fun getAllTowers(): Flow<List<TowerDbEntry>>
 
+    @Query("SELECT * FROM tower_db_entries")
+    suspend fun getAllTowersOnce(): List<TowerDbEntry>
+
+    // Viewport-bounded page so the map never loads the whole (potentially
+    // 30k+ row) imported table at once.
+    @Query("""
+        SELECT * FROM tower_db_entries
+        WHERE lat BETWEEN :minLat AND :maxLat AND lon BETWEEN :minLon AND :maxLon
+        LIMIT :limit
+    """)
+    suspend fun getTowersInBounds(
+        minLat: Double,
+        maxLat: Double,
+        minLon: Double,
+        maxLon: Double,
+        limit: Int
+    ): List<TowerDbEntry>
+
+    @Query("SELECT COUNT(*) FROM tower_db_entries")
+    fun getTowerCount(): Flow<Int>
+
+    @Query("""
+        SELECT * FROM tower_db_entries
+        WHERE CAST(cid AS TEXT) LIKE '%' || :query || '%'
+           OR address LIKE '%' || :query || '%'
+        LIMIT :limit
+    """)
+    suspend fun searchTowers(query: String, limit: Int): List<TowerDbEntry>
+
     @Query("DELETE FROM tower_db_entries")
     suspend fun clearAllTowers()
+
+    // Speed test history
+    @Insert
+    suspend fun insertSpeedTest(result: SpeedTestEntity)
+
+    @Query("SELECT * FROM speed_tests ORDER BY timestamp DESC LIMIT 25")
+    fun getSpeedTests(): Flow<List<SpeedTestEntity>>
+
+    @Query("SELECT * FROM speed_tests ORDER BY timestamp DESC")
+    suspend fun getSpeedTestsOnce(): List<SpeedTestEntity>
 }

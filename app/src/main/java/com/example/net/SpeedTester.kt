@@ -1,12 +1,9 @@
 package com.example.net
 
-import android.content.SharedPreferences
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import org.json.JSONArray
-import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 /**
@@ -14,6 +11,7 @@ import java.util.concurrent.TimeUnit
  * endpoint. Downloads for up to [MAX_TEST_MILLIS] and reports the average rate
  * plus a small-request latency estimate. A run can consume 100+ MB of mobile
  * data at gigabit-class speeds, so it only ever runs on an explicit user tap.
+ * Results are persisted by the caller (Room speed_tests table).
  */
 object SpeedTester {
 
@@ -27,8 +25,6 @@ object SpeedTester {
     private const val DOWNLOAD_URL = "https://speed.cloudflare.com/__down?bytes=200000000"
     private const val PING_URL = "https://speed.cloudflare.com/__down?bytes=0"
     private const val MAX_TEST_MILLIS = 8_000L
-    private const val PREFS_KEY = "speed_test_history"
-    private const val MAX_HISTORY = 10
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
@@ -70,31 +66,5 @@ object SpeedTester {
             latencyMs = if (bestLatency == Int.MAX_VALUE) -1 else bestLatency,
             label = label
         )
-    }
-
-    fun saveResult(prefs: SharedPreferences, result: SpeedResult) {
-        val history = (listOf(result) + loadResults(prefs)).take(MAX_HISTORY)
-        val arr = JSONArray()
-        history.forEach { r ->
-            arr.put(JSONObject().apply {
-                put("ts", r.timestamp)
-                put("mbps", r.downloadMbps)
-                put("lat", r.latencyMs)
-                put("label", r.label)
-            })
-        }
-        prefs.edit().putString(PREFS_KEY, arr.toString()).apply()
-    }
-
-    fun loadResults(prefs: SharedPreferences): List<SpeedResult> {
-        return try {
-            val arr = JSONArray(prefs.getString(PREFS_KEY, "[]") ?: "[]")
-            (0 until arr.length()).map { i ->
-                val o = arr.getJSONObject(i)
-                SpeedResult(o.getLong("ts"), o.getDouble("mbps"), o.getInt("lat"), o.getString("label"))
-            }
-        } catch (e: Exception) {
-            emptyList()
-        }
     }
 }

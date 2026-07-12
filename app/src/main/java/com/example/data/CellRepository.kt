@@ -21,6 +21,8 @@ class CellRepository(
 ) {
     val allLogs: Flow<List<CellLog>> = cellDao.getAllLogs()
     val allTowers: Flow<List<TowerDbEntry>> = cellDao.getAllTowers()
+    val towerCount: Flow<Int> = cellDao.getTowerCount()
+    val speedTests: Flow<List<SpeedTestEntity>> = cellDao.getSpeedTests()
 
     // Bounded timeouts so a stalled OpenCelliD response can never wedge the
     // monitoring loop that calls findTowerLocation on every poll.
@@ -241,6 +243,28 @@ class CellRepository(
     suspend fun countLogsForNodeb(nodebId: Long): Int = withContext(Dispatchers.IO) {
         cellDao.countLogsForNodebId(nodebId)
     }
+
+    suspend fun getTowersInBounds(
+        minLat: Double,
+        maxLat: Double,
+        minLon: Double,
+        maxLon: Double,
+        limit: Int = 400
+    ): List<TowerDbEntry> = withContext(Dispatchers.IO) {
+        cellDao.getTowersInBounds(minLat, maxLat, minLon, maxLon, limit)
+    }
+
+    suspend fun searchTowers(query: String, limit: Int = 100): List<TowerDbEntry> =
+        withContext(Dispatchers.IO) { cellDao.searchTowers(query, limit) }
+
+    suspend fun getAllTowersOnce(): List<TowerDbEntry> =
+        withContext(Dispatchers.IO) { cellDao.getAllTowersOnce() }
+
+    suspend fun insertSpeedTest(result: SpeedTestEntity) =
+        withContext(Dispatchers.IO) { cellDao.insertSpeedTest(result) }
+
+    suspend fun getSpeedTestsOnce(): List<SpeedTestEntity> =
+        withContext(Dispatchers.IO) { cellDao.getSpeedTestsOnce() }
 
     /** Row filter for bulk imports; null fields are wildcards. */
     data class ImportFilter(

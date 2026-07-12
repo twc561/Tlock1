@@ -43,9 +43,13 @@ import androidx.activity.viewModels
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.core.content.FileProvider
 import com.example.data.AppDatabase
 import com.example.data.CellRepository
+import com.example.data.SpeedTestEntity
 import com.example.data.TowerDbEntry
+import com.example.data.TowerExporter
+import com.example.net.SpeedTester
 import com.example.service.TowerMonitoringService
 import com.example.telephony.CellModel
 import com.example.ui.TelemetryViewModel
@@ -53,6 +57,7 @@ import com.example.ui.screens.DashboardScreen
 import com.example.ui.screens.LogsScreen
 import com.example.ui.screens.MapScreen
 import com.example.ui.screens.SettingsScreen
+import com.example.ui.screens.TowersScreen
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.theme.TlTheme
 import kotlinx.coroutines.Dispatchers
@@ -89,7 +94,7 @@ class MainActivity : ComponentActivity() {
     private fun handleDeepLinkIntent(intent: Intent?) {
         intent ?: return
         val tab = intent.getIntExtra(EXTRA_OPEN_TAB, -1)
-        if (tab in 0..3) requestedTabState.value = tab
+        if (tab in 0..4) requestedTabState.value = tab
         if (intent.hasExtra(EXTRA_FOCUS_LAT) && intent.hasExtra(EXTRA_FOCUS_LON)) {
             requestedFocusState.value =
                 intent.getDoubleExtra(EXTRA_FOCUS_LAT, 0.0) to intent.getDoubleExtra(EXTRA_FOCUS_LON, 0.0)
@@ -139,6 +144,7 @@ class MainActivity : ComponentActivity() {
                     repository = repository,
                     importStatus = importStatusState.value,
                     onImportCsv = { uri, floridaOnly -> importTowerCsv(uri, floridaOnly) },
+                    onExport = { kind -> exportAndShare(kind) },
                     currentCell = uiState.currentCell,
                     rsrpHistory = uiState.rsrpHistory,
                     userLocation = uiState.userLocation,
@@ -222,6 +228,62 @@ class MainActivity : ComponentActivity() {
             } catch (e: Exception) {
                 Log.e("MainActivity", "Tower import failed", e)
                 importStatusState.value = "Import failed: ${e.message}"
+            }
+        }
+    }
+
+    /** Builds an export file (towers KML/CSV or speed-test CSV) and opens the share sheet. */
+    private fun exportAndShare(kind: String) {
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                val (content, filename, mime) = when (kind) {
+                    "towers_kml" -> {
+                        val towers = repository.getAllTowersOnce()
+                        if (towers.isEmpty()) {
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(this@MainActivity, "No towers to export yet", Toast.LENGTH_SHORT).show()
+                            }
+                            return@launch
+                        }
+                        Triple(TowerExporter.towersKml(towers), "towerlock_towers.kml", "application/vnd.google-earth.kml+xml")
+                    }
+                    "towers_csv" -> {
+                        val towers = repository.getAllTowersOnce()
+                        if (towers.isEmpty()) {
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(this@MainActivity, "No towers to export yet", Toast.LENGTH_SHORT).show()
+                            }
+                            return@launch
+                        }
+                        Triple(TowerExporter.towersCsv(towers), "towerlock_towers.csv", "text/csv")
+                    }
+                    else -> {
+                        val tests = repository.getSpeedTestsOnce()
+                        if (tests.isEmpty()) {
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(this@MainActivity, "No speed tests recorded yet", Toast.LENGTH_SHORT).show()
+                            }
+                            return@launch
+                        }
+                        Triple(TowerExporter.speedTestsCsv(tests), "towerlock_speedtests.csv", "text/csv")
+                    }
+                }
+                val file = File(cacheDir, filename)
+                file.writeText(content)
+                val uri = FileProvider.getUriForFile(this@MainActivity, "$packageName.fileprovider", file)
+                val intent = Intent(Intent.ACTION_SEND).apply {
+                    type = mime
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                withContext(Dispatchers.Main) {
+                    startActivity(Intent.createChooser(intent, "Export TowerLock Data"))
+                }
+            } catch (e: Exception) {
+                Log.e("MainActivity", "Export failed", e)
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(this@MainActivity, "Export failed: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
             }
         }
     }
@@ -315,6 +377,7 @@ fun MainAppScreen(
     repository: CellRepository,
     importStatus: String? = null,
     onImportCsv: (Uri, Boolean) -> Unit = { _, _ -> },
+    onExport: (String) -> Unit = {},
     currentCell: CellModel,
     rsrpHistory: List<Int>,
     userLocation: Pair<Double, Double>?,
@@ -340,7 +403,12 @@ fun MainAppScreen(
     val isMonitoringActive by TowerMonitoringService.isRunning.collectAsState()
 
     val logs by repository.allLogs.collectAsState(initial = emptyList())
-    val towers by repository.allTowers.collectAsState(initial = emptyList())
+    val towerCount by repository.towerCount.collectAsState(initial = 0)
+    val speedTestEntities by repository.speedTests.collectAsState(initial = emptyList())
+    val appScope = rememberCoroutineScope()
+
+    // Towers tab -> Map tab deep link ("Show on Map")
+    var localFocus by remember { mutableStateOf<Pair<Double, Double>?>(null) }
 
     // Notification deep links: switch to the requested tab once per request.
     LaunchedEffect(requestedTab) {
@@ -423,6 +491,13 @@ fun MainAppScreen(
                         label = { Text("Settings") },
                         colors = navItemColors
                     )
+                    NavigationBarItem(
+                        selected = selectedTab == 4,
+                        onClick = { selectedTab = 4 },
+                        icon = { Icon(imageVector = Icons.Default.CellTower, contentDescription = "Towers") },
+                        label = { Text("Towers") },
+                        colors = navItemColors
+                    )
                 }
             }
         }
@@ -459,6 +534,21 @@ fun MainAppScreen(
                         rsrpHistory = rsrpHistory,
                         logs = logs,
                         towerSource = towerSource,
+                        speedTests = speedTestEntities.map {
+                            SpeedTester.SpeedResult(it.timestamp, it.downloadMbps, it.latencyMs, it.label)
+                        },
+                        onSpeedTestCompleted = { result ->
+                            appScope.launch {
+                                repository.insertSpeedTest(
+                                    SpeedTestEntity(
+                                        timestamp = result.timestamp,
+                                        downloadMbps = result.downloadMbps,
+                                        latencyMs = result.latencyMs,
+                                        label = result.label
+                                    )
+                                )
+                            }
+                        },
                         onSnapshotClick = {
                             val intent = Intent(context, TowerMonitoringService::class.java).apply {
                                 action = "ACTION_SNAPSHOT"
@@ -477,10 +567,16 @@ fun MainAppScreen(
                             towerLon = towerLocation?.second,
                             towerAddress = resolvedAddress,
                             confidenceMeters = confidenceRange,
-                            allTowers = towers,
-                            focusLat = focusPoint?.first,
-                            focusLon = focusPoint?.second,
-                            onFocusConsumed = onFocusConsumed,
+                            towerCount = towerCount,
+                            loadTowersInBounds = { minLat, maxLat, minLon, maxLon ->
+                                repository.getTowersInBounds(minLat, maxLat, minLon, maxLon)
+                            },
+                            focusLat = localFocus?.first ?: focusPoint?.first,
+                            focusLon = localFocus?.second ?: focusPoint?.second,
+                            onFocusConsumed = {
+                                localFocus = null
+                                onFocusConsumed()
+                            },
                             onSaveTower = { lat, lon, address ->
                                 coroutineScope.launch {
                                     repository.insertCustomTower(
@@ -543,7 +639,24 @@ fun MainAppScreen(
                             onBackupDb = onBackupDb,
                             onRestoreDb = onRestoreDb,
                             onImportCsv = onImportCsv,
-                            importStatus = importStatus
+                            importStatus = importStatus,
+                            onExport = onExport
+                        )
+                    }
+                    4 -> {
+                        TowersScreen(
+                            logs = logs,
+                            userLat = userLocation?.first,
+                            userLon = userLocation?.second,
+                            towerCount = towerCount,
+                            searchTowers = { query -> repository.searchTowers(query) },
+                            loadNearby = { lat, lon ->
+                                repository.getTowersInBounds(lat - 0.35, lat + 0.35, lon - 0.35, lon + 0.35, 300)
+                            },
+                            onShowOnMap = { lat, lon ->
+                                localFocus = lat to lon
+                                selectedTab = 1
+                            }
                         )
                     }
                     }

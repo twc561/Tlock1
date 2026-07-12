@@ -191,7 +191,10 @@ class TowerMonitoringService : Service() {
                                     towerLat = lookup.lat,
                                     towerLon = lookup.lon,
                                     address = resolvedAddress,
-                                    source = lookup.source
+                                    source = lookup.source,
+                                    timingAdvanceMeters = cell.distanceEstimateMeters,
+                                    caCarrierCount = cell.activeCarriers.size.coerceAtLeast(1),
+                                    aggregateBandwidthKhz = cell.activeCarriers.sumOf { it.bandwidthKhz }
                                 )
                                 batchLogs.add(logEntry)
                             }
@@ -286,7 +289,10 @@ class TowerMonitoringService : Service() {
                                         towerLat = lookup.lat,
                                         towerLon = lookup.lon,
                                         address = resolvedAddress,
-                                        source = lookup.source
+                                        source = lookup.source,
+                                        timingAdvanceMeters = cell.distanceEstimateMeters,
+                                        caCarrierCount = cell.activeCarriers.size.coerceAtLeast(1),
+                                        aggregateBandwidthKhz = cell.activeCarriers.sumOf { it.bandwidthKhz }
                                     )
                                     repository.insertLog(logEntry)
                                 }
@@ -433,7 +439,10 @@ class TowerMonitoringService : Service() {
                             towerLat = null,
                             towerLon = null,
                             address = "Recorded 5G SA to LTE drop coordinates",
-                            source = "5G Drop Monitor"
+                            source = "5G Drop Monitor",
+                            timingAdvanceMeters = current.distanceEstimateMeters,
+                            caCarrierCount = current.activeCarriers.size.coerceAtLeast(1),
+                            aggregateBandwidthKhz = current.activeCarriers.sumOf { it.bandwidthKhz }
                         )
                         repository.insertLog(dropLog)
                     }
@@ -844,7 +853,10 @@ class TowerMonitoringService : Service() {
                             towerLat = _towerLocation.value?.first,
                             towerLon = _towerLocation.value?.second,
                             address = "Manual snapshot saved by user",
-                            source = "Manual Snapshot"
+                            source = "Manual Snapshot",
+                            timingAdvanceMeters = current.distanceEstimateMeters,
+                            caCarrierCount = current.activeCarriers.size.coerceAtLeast(1),
+                            aggregateBandwidthKhz = current.activeCarriers.sumOf { it.bandwidthKhz }
                         )
                         repository.insertLog(snapshotLog)
                         triggerAlert(

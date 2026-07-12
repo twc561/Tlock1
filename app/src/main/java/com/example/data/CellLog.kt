@@ -1,5 +1,6 @@
 package com.example.data
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 
@@ -26,5 +27,11 @@ data class CellLog(
     val towerLat: Double?,
     val towerLon: Double?,
     val address: String,
-    val source: String
+    val source: String,
+    // Schema v3: capacity and geometry context captured per sample.
+    // timingAdvanceMeters feeds trilateration in TowerObservations; the CA
+    // fields let history answer "when do I actually get carrier aggregation".
+    @ColumnInfo(defaultValue = "0") val timingAdvanceMeters: Double = 0.0,
+    @ColumnInfo(defaultValue = "1") val caCarrierCount: Int = 1,
+    @ColumnInfo(defaultValue = "0") val aggregateBandwidthKhz: Int = 0
 )
