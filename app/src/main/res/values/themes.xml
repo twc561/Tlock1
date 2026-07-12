@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!-- Light variant; values-night/themes.xml supplies the dark one, so the window
+         background during app launch already matches the system setting before
+         Compose takes over. -->
+    <style name="Theme.MyApplication" parent="android:Theme.DeviceDefault.Light.NoActionBar" />
+</resources>

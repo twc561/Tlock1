@@ -1,0 +1,67 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Subtle elegant glowing halo behind the logo -->
+    <path
+        android:fillColor="#1510B981"
+        android:pathData="M54,54m-36,0a36,36 0 1,1 72,0a36,36 0 1,1 -72,0" />
+
+    <!-- Left Signal Waves (Sky Blue) -->
+    <!-- Inner Left Arc -->
+    <path
+        android:strokeColor="#38BDF8"
+        android:strokeWidth="3.5"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:pathData="M28,38 A32,32 0 0,0 28,70" />
+    <!-- Outer Left Arc -->
+    <path
+        android:strokeColor="#38BDF8"
+        android:strokeWidth="3.5"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:pathData="M20,28 A44,44 0 0,0 20,80" />
+
+    <!-- Right Signal Waves (Sky Blue) -->
+    <!-- Inner Right Arc -->
+    <path
+        android:strokeColor="#38BDF8"
+        android:strokeWidth="3.5"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:pathData="M80,38 A32,32 0 0,1 80,70" />
+    <!-- Outer Right Arc -->
+    <path
+        android:strokeColor="#38BDF8"
+        android:strokeWidth="3.5"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:pathData="M90,28 A44,44 0 0,1 90,80" />
+
+    <!-- Padlock Shackle / Loop (White) -->
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="4"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:pathData="M45,50 V37 A9,9 0 0,1 63,37 V50" />
+
+    <!-- Padlock Body (Emerald Green) -->
+    <path
+        android:fillColor="#10B981"
+        android:pathData="M38,48 h32 v26 a6,6 0 0,1 -6,6 h-20 a6,6 0 0,1 -6,-6 z" />
+
+    <!-- Secure Padlock Keyhole / Detail (White) -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,58 m-3,0 a3,3 0 1,1 6,0 a3,3 0 1,1 -6,0" />
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2.5"
+        android:strokeLineCap="round"
+        android:pathData="M54,61 V68" />
+
+</vector>

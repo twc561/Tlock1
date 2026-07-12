@@ -1,0 +1,11 @@
+<resources>
+    <string name="app_name">TowerLock Pro</string>
+
+    <!-- Monitoring notification stat labels -->
+    <string name="notif_label_band">BAND</string>
+    <string name="notif_label_cell_id">CELL ID</string>
+    <string name="notif_label_pci_tac">PCI / TAC</string>
+    <string name="notif_label_ca">CARRIER AGG</string>
+    <string name="notif_label_quality">QUALITY (SINR)</string>
+    <string name="notif_label_ta">TIMING ADVANCE</string>
+</resources>

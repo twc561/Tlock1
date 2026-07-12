@@ -1,0 +1,6 @@
+{
+  "name": "TowerLock Pro",
+  "description": "Professional-grade cellular tower monitoring and safety analytics suite.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
