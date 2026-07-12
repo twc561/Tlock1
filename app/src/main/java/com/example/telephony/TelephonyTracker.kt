@@ -390,7 +390,8 @@ class TelephonyTracker(
                 band = servingBandData.first,
                 arfcn = sanitizeInt(servingArfcn),
                 rsrp = sanitizeSignal(servingRsrp),
-                type = "PCC"
+                type = "PCC",
+                bandwidthKhz = builder.bandwidthKhz.coerceAtLeast(0)
             )
         )
 
@@ -463,7 +464,8 @@ class TelephonyTracker(
                         band = bandStr,
                         arfcn = sanitizeInt(arfcn),
                         rsrp = sanitizeSignal(matchedRsrp),
-                        type = typeStr
+                        type = typeStr,
+                        bandwidthKhz = config.cellBandwidthDownlinkKhz.coerceAtLeast(0)
                     )
                 } catch (e: Exception) {
                     Log.e("TelephonyTracker", "Error parsing PhysicalChannelConfig", e)
@@ -487,13 +489,18 @@ class TelephonyTracker(
                 ?.filter { it > 0 }
                 .orEmpty()
             if (bandwidths.size > 1) {
+                // First entry belongs to the PCC; backfill its bandwidth if unknown
+                if (activeCarriersList[0].bandwidthKhz <= 0) {
+                    activeCarriersList[0] = activeCarriersList[0].copy(bandwidthKhz = bandwidths[0])
+                }
                 bandwidths.drop(1).forEach { bwKhz ->
                     activeCarriersList.add(
                         CarrierInfo(
                             band = "SCC ${bwKhz / 1000} MHz (band not reported)",
                             arfcn = 0,
                             rsrp = sanitizeSignal(servingRsrp),
-                            type = "SCC"
+                            type = "SCC",
+                            bandwidthKhz = bwKhz
                         )
                     )
                 }
@@ -696,35 +703,35 @@ class TelephonyTracker(
                 if (bandName.contains("n41")) {
                     // Simulate T-Mobile 4CC Ultra Capacity Carrier Aggregation: n41 (100MHz) + n41 (100MHz) + n25 (20MHz) + n71 (15MHz)
                     listOf(
-                        CarrierInfo(band = "n41 (2.5 GHz Mid-Band - PCC)", arfcn = 518000, rsrp = rsrp, type = "PCC"),
-                        CarrierInfo(band = "n41 (2.5 GHz Mid-Band - SCC)", arfcn = 522000, rsrp = rsrp - 4, type = "SCC"),
-                        CarrierInfo(band = "n25 (1900 MHz PCS)", arfcn = 390000, rsrp = rsrp - 9, type = "SCC"),
-                        CarrierInfo(band = "n71 (600 MHz)", arfcn = 126800, rsrp = rsrp - 5, type = "SCC")
+                        CarrierInfo(band = "n41 (2.5 GHz Mid-Band - PCC)", arfcn = 518000, rsrp = rsrp, type = "PCC", bandwidthKhz = 100000),
+                        CarrierInfo(band = "n41 (2.5 GHz Mid-Band - SCC)", arfcn = 522000, rsrp = rsrp - 4, type = "SCC", bandwidthKhz = 100000),
+                        CarrierInfo(band = "n25 (1900 MHz PCS)", arfcn = 390000, rsrp = rsrp - 9, type = "SCC", bandwidthKhz = 20000),
+                        CarrierInfo(band = "n71 (600 MHz)", arfcn = 126800, rsrp = rsrp - 5, type = "SCC", bandwidthKhz = 15000)
                     )
                 } else {
                     // Simulate T-Mobile 3CC Extended Range Carrier Aggregation: n71 (15MHz) + n41 (100MHz) + n25 (20MHz)
                     listOf(
-                        CarrierInfo(band = "n71 (600 MHz - PCC)", arfcn = 126800, rsrp = rsrp, type = "PCC"),
-                        CarrierInfo(band = "n41 (2.5 GHz Mid-Band)", arfcn = 518000, rsrp = rsrp - 7, type = "SCC"),
-                        CarrierInfo(band = "n25 (1900 MHz PCS)", arfcn = 390000, rsrp = rsrp - 10, type = "SCC")
+                        CarrierInfo(band = "n71 (600 MHz - PCC)", arfcn = 126800, rsrp = rsrp, type = "PCC", bandwidthKhz = 15000),
+                        CarrierInfo(band = "n41 (2.5 GHz Mid-Band)", arfcn = 518000, rsrp = rsrp - 7, type = "SCC", bandwidthKhz = 100000),
+                        CarrierInfo(band = "n25 (1900 MHz PCS)", arfcn = 390000, rsrp = rsrp - 10, type = "SCC", bandwidthKhz = 20000)
                     )
                 }
             }
             tech == "5G NSA" -> {
                 // Simulate ENDC Dual Connectivity: B66 (PCC LTE) + B2 (SCC LTE) + n41 (SCC 5G NR)
                 listOf(
-                    CarrierInfo(band = "B66 (1700/2100 MHz - PCC LTE)", arfcn = 66436, rsrp = rsrp, type = "PCC"),
-                    CarrierInfo(band = "B2 (1900 MHz - SCC LTE)", arfcn = 900, rsrp = rsrp - 4, type = "SCC"),
-                    CarrierInfo(band = "n41 (2.5 GHz - SCC 5G NR)", arfcn = 518000, rsrp = rsrp - 6, type = "SCC")
+                    CarrierInfo(band = "B66 (1700/2100 MHz - PCC LTE)", arfcn = 66436, rsrp = rsrp, type = "PCC", bandwidthKhz = 20000),
+                    CarrierInfo(band = "B2 (1900 MHz - SCC LTE)", arfcn = 900, rsrp = rsrp - 4, type = "SCC", bandwidthKhz = 20000),
+                    CarrierInfo(band = "n41 (2.5 GHz - SCC 5G NR)", arfcn = 518000, rsrp = rsrp - 6, type = "SCC", bandwidthKhz = 80000)
                 )
             }
             else -> { // 4G LTE
                 // Simulate T-Mobile LTE 4CC CA: B66 (20MHz) + B2 (20MHz) + B12 (5MHz) + B71 (10MHz)
                 listOf(
-                    CarrierInfo(band = "B66 (1700/2100 MHz - PCC)", arfcn = 66436, rsrp = rsrp, type = "PCC"),
-                    CarrierInfo(band = "B2 (1900 MHz)", arfcn = 900, rsrp = rsrp - 5, type = "SCC"),
-                    CarrierInfo(band = "B12 (700 MHz)", arfcn = 5010, rsrp = rsrp - 11, type = "SCC"),
-                    CarrierInfo(band = "B71 (600 MHz)", arfcn = 68735, rsrp = rsrp - 8, type = "SCC")
+                    CarrierInfo(band = "B66 (1700/2100 MHz - PCC)", arfcn = 66436, rsrp = rsrp, type = "PCC", bandwidthKhz = 20000),
+                    CarrierInfo(band = "B2 (1900 MHz)", arfcn = 900, rsrp = rsrp - 5, type = "SCC", bandwidthKhz = 20000),
+                    CarrierInfo(band = "B12 (700 MHz)", arfcn = 5010, rsrp = rsrp - 11, type = "SCC", bandwidthKhz = 5000),
+                    CarrierInfo(band = "B71 (600 MHz)", arfcn = 68735, rsrp = rsrp - 8, type = "SCC", bandwidthKhz = 10000)
                 )
             }
         }

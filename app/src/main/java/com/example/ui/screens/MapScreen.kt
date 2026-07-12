@@ -29,6 +29,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.example.analysis.TowerObservations
+import com.example.data.CellLog
 import com.example.data.TowerDbEntry
 import com.example.location.LocationTracker
 import com.example.telephony.CellModel
@@ -45,13 +47,17 @@ import org.osmdroid.views.overlay.Polyline
 import java.util.Locale
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.filled.Grain
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.ui.unit.sp
+import java.text.DateFormat
+import java.util.Date
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MapScreen(
     cell: CellModel,
+    logs: List<CellLog> = emptyList(),
     userLat: Double?,
     userLon: Double?,
     towerLat: Double?,
@@ -71,6 +77,7 @@ fun MapScreen(
     var isBottomSheetOpen by remember { mutableStateOf(false) }
 
     var isPlacingTower by remember { mutableStateOf(false) }
+    var showHeatmap by remember { mutableStateOf(false) }
     val isPlacingTowerState = rememberUpdatedState(isPlacingTower)
     var pendingTowerPoint by remember { mutableStateOf<GeoPoint?>(null) }
     var pendingAddressInput by remember { mutableStateOf("") }
@@ -314,6 +321,30 @@ fun MapScreen(
                     }
                 }
 
+                // 4.5. Signal heatmap: recent logged sample points colored by RSRP.
+                // Newest logs first (query is timestamp DESC); capped to keep the
+                // overlay pass cheap on big histories.
+                if (showHeatmap) {
+                    logs.asSequence()
+                        .filter { it.lat != 0.0 || it.lon != 0.0 }
+                        .take(400)
+                        .forEach { log ->
+                            val fill = when {
+                                log.rsrp >= -80 -> 0x664CAF50
+                                log.rsrp >= -95 -> 0x668BC34A
+                                log.rsrp >= -110 -> 0x66FFB74D
+                                else -> 0x66E57373
+                            }
+                            val dot = Polygon().apply {
+                                points = Polygon.pointsAsCircle(GeoPoint(log.lat, log.lon), 30.0)
+                                fillPaint.color = fill
+                                outlinePaint.color = 0x00000000
+                                outlinePaint.strokeWidth = 0f
+                            }
+                            mapView.overlays.add(dot)
+                        }
+                }
+
                 // 5. Render All Logged / Known Towers
                 allTowers.forEach { tower ->
                     // Exclude serving cell if already drawn
@@ -353,6 +384,21 @@ fun MapScreen(
                 },
                 color = tl.textPrimary,
                 style = MaterialTheme.typography.labelMedium
+            )
+        }
+
+        // FAB: toggle the drive-log signal heatmap overlay.
+        FloatingActionButton(
+            onClick = { showHeatmap = !showHeatmap },
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(bottom = 275.dp, end = 16.dp),
+            containerColor = if (showHeatmap) tl.sky else tl.surface,
+            contentColor = if (showHeatmap) tl.onAccent else tl.textPrimary
+        ) {
+            Icon(
+                imageVector = Icons.Default.Grain,
+                contentDescription = if (showHeatmap) "Hide signal heatmap" else "Show signal heatmap"
             )
         }
 
@@ -656,6 +702,85 @@ fun MapScreen(
                     ) {
                         DetailItem(label = "Cell ID (CID/gNB)", value = "${selectedTower!!.cid}")
                         DetailItem(label = "MCC-MNC", value = "${selectedTower!!.mcc}-${selectedTower!!.mnc}")
+                    }
+
+                    // Per-tower history built from this device's own observations:
+                    // logs are grouped by physical tower (eNB/gNB decoded from the CID).
+                    val tower = selectedTower!!
+                    val gnbBits = remember {
+                        context.getSharedPreferences("TowerLockPrefs", Context.MODE_PRIVATE)
+                            .getInt("gnb_bits", 24)
+                    }
+                    val towerNodeb = remember(tower) {
+                        if (tower.radio == "NR") tower.cid shr (36 - gnbBits) else tower.cid shr 8
+                    }
+                    val towerLogs = remember(tower, logs) {
+                        if (towerNodeb > 0) logs.filter { it.nodebId == towerNodeb } else emptyList()
+                    }
+                    val summary = remember(towerLogs) { TowerObservations.summarize(towerLogs) }
+
+                    if (summary != null) {
+                        Spacer(modifier = Modifier.height(16.dp))
+                        HorizontalDivider(color = tl.surfaceVariant)
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = "YOUR OBSERVATIONS (${summary.observationCount})",
+                            style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 1.2.sp),
+                            color = tl.textMuted,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "Bands seen: " + summary.bands.joinToString { "${it.first} ×${it.second}" },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = tl.textSecondary
+                        )
+                        Text(
+                            text = "Signal: avg ${summary.avgRsrp} dBm • best ${summary.bestRsrp} dBm • " +
+                                    summary.techs.joinToString("/"),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = tl.textSecondary
+                        )
+                        val dateFmt = remember { DateFormat.getDateInstance(DateFormat.MEDIUM) }
+                        Text(
+                            text = "First seen ${dateFmt.format(Date(summary.firstSeen))} • " +
+                                    "last ${dateFmt.format(Date(summary.lastSeen))}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = tl.textSecondary
+                        )
+
+                        val obsPoints = remember(towerLogs) {
+                            towerLogs.map {
+                                TowerObservations.Observation(it.lat, it.lon, it.rsrp, it.sectorId)
+                            }
+                        }
+                        if (obsPoints.size >= 3) {
+                            val refined = remember(obsPoints) { TowerObservations.refinePosition(obsPoints) }
+                            refined?.let { (rlat, rlon) ->
+                                val deltaM = TowerObservations.distanceMeters(rlat, rlon, tower.lat, tower.lon)
+                                Text(
+                                    text = String.format(
+                                        Locale.US,
+                                        "Observation-fit position: %.5f, %.5f (Δ %.0f m from mapped point)",
+                                        rlat, rlon, deltaM
+                                    ),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = tl.sky
+                                )
+                            }
+                            val bearings = remember(obsPoints) {
+                                TowerObservations.sectorBearings(tower.lat, tower.lon, obsPoints)
+                            }
+                            if (bearings.isNotEmpty()) {
+                                Text(
+                                    text = "Sectors: " + bearings.joinToString {
+                                        "S${it.sectorId} faces ${it.compass} (${it.bearingDegrees}°, ${it.samples} obs)"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = tl.sky
+                                )
+                            }
+                        }
                     }
 
                     Spacer(modifier = Modifier.height(24.dp))

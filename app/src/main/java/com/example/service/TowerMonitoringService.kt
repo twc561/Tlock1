@@ -67,6 +67,9 @@ class TowerMonitoringService : Service() {
     private var isLoggingPaused = false
     private var monitoringStartedAt = System.currentTimeMillis()
     private var lastAlertedUnmappedCellId: Long = 0
+    // Towers already checked for "new tower" discovery this session, so the
+    // per-poll DB count query only ever runs once per eNB/gNB.
+    private val discoveryCheckedNodebs = java.util.Collections.synchronizedSet(mutableSetOf<Long>())
     // Monotonic ids keep alert notifications distinct without the collision risk
     // of truncating System.currentTimeMillis() to Int.
     private val alertNotificationId = java.util.concurrent.atomic.AtomicInteger(2000)
@@ -113,7 +116,10 @@ class TowerMonitoringService : Service() {
 
             while (isActive) {
                 val prefs = getSharedPreferences("TowerLockPrefs", MODE_PRIVATE)
-                val batchingEnabled = prefs.getBoolean("batching_enabled", true)
+                // Drive mode needs continuous sampling to catch short-lived
+                // handovers between towers, so it overrides batching.
+                val batchingEnabled = prefs.getBoolean("batching_enabled", true) &&
+                        !prefs.getBoolean("drive_mode", false)
                 val intervalSeconds = prefs.getInt("batch_interval", 60)
                 val pollInterval = prefs.getInt("poll_interval", 3)
 
@@ -161,6 +167,8 @@ class TowerMonitoringService : Service() {
                             _resolvedAddress.value = resolvedAddress
                             _confidenceRange.value = lookup.range
                             _towerSource.value = lookup.source
+
+                            maybeNotifyNewTower(cell, lookup.lat, lookup.lon)
 
                             if (userLoc != null && !isLoggingPaused) {
                                 val logEntry = CellLog(
@@ -255,6 +263,8 @@ class TowerMonitoringService : Service() {
                                 _confidenceRange.value = lookup.range
                                 _towerSource.value = lookup.source
 
+                                maybeNotifyNewTower(cell, lookup.lat, lookup.lon)
+
                                 if (userLoc != null) {
                                     val logEntry = CellLog(
                                         tech = cell.tech,
@@ -295,7 +305,9 @@ class TowerMonitoringService : Service() {
 
                     // Dynamically detect configuration shifts back to batching
                     while (isActive) {
-                        val currentBatchingEnabled = getSharedPreferences("TowerLockPrefs", MODE_PRIVATE).getBoolean("batching_enabled", true)
+                        val p = getSharedPreferences("TowerLockPrefs", MODE_PRIVATE)
+                        val currentBatchingEnabled = p.getBoolean("batching_enabled", true) &&
+                                !p.getBoolean("drive_mode", false)
                         if (currentBatchingEnabled) {
                             Log.d("TowerMonitoringService", "Scheduler: Transitioning back to batched mode")
                             break
@@ -306,6 +318,30 @@ class TowerMonitoringService : Service() {
                 }
             }
         }
+    }
+
+    /**
+     * Drive-mode tower discovery: fires a notification the first time the device
+     * ever connects to a physical tower (eNB/gNB) that has no prior log history.
+     */
+    private suspend fun maybeNotifyNewTower(cell: CellModel, towerLat: Double?, towerLon: Double?) {
+        if (!getSharedPreferences("TowerLockPrefs", MODE_PRIVATE).getBoolean("drive_mode", false)) return
+        if (cell.nodebId <= 0) return
+        if (!discoveryCheckedNodebs.add(cell.nodebId)) return
+        if (repository.countLogsForNodeb(cell.nodebId) > 0) return
+
+        val gnbLabel = if (cell.tech.contains("5G")) "gNB" else "eNB"
+        val focusIntent = if (towerLat != null && towerLon != null) {
+            tabPendingIntent(alertNotificationId.incrementAndGet(), 1) {
+                putExtra(MainActivity.EXTRA_FOCUS_LAT, towerLat)
+                putExtra(MainActivity.EXTRA_FOCUS_LON, towerLon)
+            }
+        } else null
+        triggerAlert(
+            "New Tower Discovered",
+            "First contact with $gnbLabel ${cell.nodebId} on ${cell.bandName}.",
+            R.drawable.ic_cell_tower, 0xFF10B981.toInt(), focusIntent
+        )
     }
 
     private fun triggerAlertsEngine(prev: CellModel, current: CellModel, source: String) {

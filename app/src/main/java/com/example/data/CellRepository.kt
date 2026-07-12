@@ -237,6 +237,44 @@ class CellRepository(
         cellDao.insertTower(entry)
     }
 
+    /** Number of existing log rows for a physical tower (eNB/gNB); 0 = never seen. */
+    suspend fun countLogsForNodeb(nodebId: Long): Int = withContext(Dispatchers.IO) {
+        cellDao.countLogsForNodebId(nodebId)
+    }
+
+    /** Row filter for bulk imports; null fields are wildcards. */
+    data class ImportFilter(
+        val mcc: String? = null,
+        val mnc: String? = null,
+        val minLat: Double? = null,
+        val maxLat: Double? = null,
+        val minLon: Double? = null,
+        val maxLon: Double? = null
+    ) {
+        fun matches(entry: TowerDbEntry): Boolean {
+            // Compare numerically so "260" matches "260 " and zero-padded variants
+            if (mcc != null && entry.mcc.trim().toIntOrNull() != mcc.toIntOrNull()) return false
+            if (mnc != null && entry.mnc.trim().toIntOrNull() != mnc.toIntOrNull()) return false
+            if (minLat != null && entry.lat < minLat) return false
+            if (maxLat != null && entry.lat > maxLat) return false
+            if (minLon != null && entry.lon < minLon) return false
+            if (maxLon != null && entry.lon > maxLon) return false
+            return true
+        }
+    }
+
+    companion object {
+        /** OpenCelliD bulk-extract filter: T-Mobile US (310-260) within a Florida bounding box. */
+        val FLORIDA_TMOBILE_FILTER = ImportFilter(
+            mcc = "310",
+            mnc = "260",
+            minLat = 24.3,
+            maxLat = 31.1,
+            minLon = -87.7,
+            maxLon = -79.8
+        )
+    }
+
     private data class CsvMapping(
         val radioIdx: Int = 0,
         val mccIdx: Int = 1,
@@ -335,38 +373,66 @@ class CellRepository(
         }
     }
 
-    // CSV Import: mcc, mnc, area, cid, lat, lon, range, address
-    suspend fun importCsv(inputStream: InputStream): Int = withContext(Dispatchers.IO) {
+    // CSV Import: mcc, mnc, area, cid, lat, lon, range, address. Accepts plain or
+    // gzip-compressed input (OpenCelliD regional extracts ship as .csv.gz), an
+    // optional row filter, and a progress callback invoked every few thousand rows.
+    suspend fun importCsv(
+        inputStream: InputStream,
+        filter: ImportFilter? = null,
+        onProgress: ((parsed: Int, kept: Int) -> Unit)? = null
+    ): Int = withContext(Dispatchers.IO) {
         var importedCount = 0
+        var parsedCount = 0
         val entries = mutableListOf<TowerDbEntry>()
         try {
-            BufferedReader(InputStreamReader(inputStream)).use { reader ->
+            val buffered = java.io.BufferedInputStream(inputStream)
+            buffered.mark(2)
+            val magic1 = buffered.read()
+            val magic2 = buffered.read()
+            buffered.reset()
+            val effectiveStream: InputStream = if (magic1 == 0x1f && magic2 == 0x8b) {
+                java.util.zip.GZIPInputStream(buffered)
+            } else {
+                buffered
+            }
+
+            BufferedReader(InputStreamReader(effectiveStream)).use { reader ->
                 val firstLine = reader.readLine() ?: return@use
-                val isHeader = firstLine.contains("mcc", ignoreCase = true) || 
-                               firstLine.contains("radio", ignoreCase = true) || 
+                val isHeader = firstLine.contains("mcc", ignoreCase = true) ||
+                               firstLine.contains("radio", ignoreCase = true) ||
                                firstLine.contains("lat", ignoreCase = true)
-                
+
                 val mapping = detectMapping(firstLine, isHeader)
-                
-                if (!isHeader) {
-                    parseCsvLine(firstLine, mapping)?.let { entries.add(it) }
+
+                fun accept(entry: TowerDbEntry) {
+                    if (filter == null || filter.matches(entry)) entries.add(entry)
                 }
-                
+
+                if (!isHeader) {
+                    parsedCount++
+                    parseCsvLine(firstLine, mapping)?.let { accept(it) }
+                }
+
                 var line: String?
                 while (reader.readLine().also { line = it } != null) {
                     val currentLine = line ?: continue
                     if (currentLine.isBlank()) continue
-                    parseCsvLine(currentLine, mapping)?.let { entries.add(it) }
-                    if (entries.size >= 100) {
+                    parsedCount++
+                    parseCsvLine(currentLine, mapping)?.let { accept(it) }
+                    if (entries.size >= 2000) {
                         cellDao.insertTowers(entries)
                         importedCount += entries.size
                         entries.clear()
+                    }
+                    if (parsedCount % 5000 == 0) {
+                        onProgress?.invoke(parsedCount, importedCount + entries.size)
                     }
                 }
                 if (entries.isNotEmpty()) {
                     cellDao.insertTowers(entries)
                     importedCount += entries.size
                 }
+                onProgress?.invoke(parsedCount, importedCount)
             }
         } catch (e: Exception) {
             Log.e("CellRepository", "CSV Import failed", e)

@@ -26,6 +26,9 @@ interface CellDao {
     @Query("SELECT * FROM cell_logs WHERE id = :id")
     suspend fun getLogById(id: Long): CellLog?
 
+    @Query("SELECT COUNT(*) FROM cell_logs WHERE nodebId = :nodebId")
+    suspend fun countLogsForNodebId(nodebId: Long): Int
+
     // Local Tower DB operations
     @Query("""
         SELECT * FROM tower_db_entries 

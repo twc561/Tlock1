@@ -26,8 +26,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.telephony.CapacityEstimator
 import com.example.telephony.CellModel
 import com.example.location.LocationTracker
+import com.example.net.SpeedTester
 import com.example.ui.theme.TlTheme
 import com.example.ui.theme.signalColorForGrade
 import com.example.ui.theme.signalColorForRsrp
@@ -458,7 +460,8 @@ fun DashboardScreen(
                                         fontWeight = FontWeight.SemiBold
                                     )
                                     Text(
-                                        text = "ARFCN: ${carrier.arfcn}",
+                                        text = "ARFCN: ${carrier.arfcn}" +
+                                                if (carrier.bandwidthKhz > 0) " • ${carrier.bandwidthKhz / 1000} MHz" else "",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = tl.textMuted
                                     )
@@ -506,6 +509,128 @@ fun DashboardScreen(
                                     color = tl.surfaceVariant,
                                     thickness = 1.dp
                                 )
+                            }
+                        }
+
+                        // Connection capacity: aggregate bandwidth + theoretical DL ceiling
+                        val capacity = remember(cell.activeCarriers) {
+                            CapacityEstimator.estimate(cell.activeCarriers)
+                        }
+                        if (capacity.totalMhz > 0.0) {
+                            HorizontalDivider(
+                                modifier = Modifier.padding(vertical = 10.dp),
+                                color = tl.surfaceVariant,
+                                thickness = 1.dp
+                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column {
+                                    Text(
+                                        text = "Aggregate Bandwidth",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = tl.textMuted
+                                    )
+                                    Text(
+                                        text = String.format(Locale.US, "%.0f MHz", capacity.totalMhz) +
+                                                if (capacity.unknownBwCarriers > 0) "+" else "",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = tl.textPrimary,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                                Column(horizontalAlignment = Alignment.End) {
+                                    Text(
+                                        text = "Est. DL Ceiling",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = tl.textMuted
+                                    )
+                                    Text(
+                                        text = "~${capacity.ceilingMbps} Mbps" +
+                                                if (capacity.unknownBwCarriers > 0) "+" else "",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = tl.emerald,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        }
+
+                        // One-tap throughput test recorded against the current radio config
+                        val speedContext = LocalContext.current
+                        val speedPrefs = remember {
+                            speedContext.getSharedPreferences("TowerLockPrefs", Context.MODE_PRIVATE)
+                        }
+                        val speedScope = rememberCoroutineScope()
+                        var isSpeedTesting by remember { mutableStateOf(false) }
+                        var speedHistory by remember { mutableStateOf(SpeedTester.loadResults(speedPrefs)) }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Button(
+                            onClick = {
+                                if (!isSpeedTesting) {
+                                    isSpeedTesting = true
+                                    val label = if (cell.activeCarriers.size > 1) {
+                                        "${cell.activeCarriers.size}CC " +
+                                                cell.activeCarriers.joinToString("+") { it.band.substringBefore(" ") }
+                                    } else {
+                                        cell.bandName.substringBefore(" ")
+                                    }
+                                    speedScope.launch {
+                                        try {
+                                            val result = SpeedTester.run(label)
+                                            SpeedTester.saveResult(speedPrefs, result)
+                                            speedHistory = SpeedTester.loadResults(speedPrefs)
+                                        } catch (e: Exception) {
+                                            android.widget.Toast.makeText(
+                                                speedContext,
+                                                "Speed test failed: ${e.message}",
+                                                android.widget.Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
+                                        isSpeedTesting = false
+                                    }
+                                }
+                            },
+                            enabled = !isSpeedTesting,
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = tl.emerald,
+                                contentColor = tl.onAccent
+                            ),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text(
+                                text = if (isSpeedTesting) "Testing…" else "Run Speed Test (uses ~100+ MB data)",
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        if (speedHistory.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            val timeFmt = remember { SimpleDateFormat("MMM d h:mm a", Locale.US) }
+                            speedHistory.take(3).forEach { result ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 2.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        text = "${timeFmt.format(Date(result.timestamp))} • ${result.label}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = tl.textMuted,
+                                        maxLines = 1,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Text(
+                                        text = String.format(Locale.US, "%.0f Mbps • %d ms", result.downloadMbps, result.latencyMs),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = tl.sky,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
                             }
                         }
                     }

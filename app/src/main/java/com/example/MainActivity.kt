@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
@@ -75,6 +76,11 @@ class MainActivity : ComponentActivity() {
     private val telemetryViewModel: TelemetryViewModel by viewModels()
     private var monitoringService: TowerMonitoringService? = null
     private var isBound = false
+    private lateinit var repository: CellRepository
+
+    // Bulk tower import runs on the activity's lifecycle scope (not a tab-local
+    // composable scope) so switching tabs doesn't cancel a large import.
+    private val importStatusState = mutableStateOf<String?>(null)
 
     // Deep-link requests (tab to open, map point to center) consumed by the UI.
     private val requestedTabState = mutableStateOf<Int?>(null)
@@ -123,7 +129,7 @@ class MainActivity : ComponentActivity() {
         handleDeepLinkIntent(intent)
 
         val db = AppDatabase.getDatabase(this, lifecycleScope)
-        val repository = CellRepository(db.cellDao(), this)
+        repository = CellRepository(db.cellDao(), this)
 
         setContent {
             MyApplicationTheme {
@@ -131,6 +137,8 @@ class MainActivity : ComponentActivity() {
 
                 MainAppScreen(
                     repository = repository,
+                    importStatus = importStatusState.value,
+                    onImportCsv = { uri, floridaOnly -> importTowerCsv(uri, floridaOnly) },
                     currentCell = uiState.currentCell,
                     rsrpHistory = uiState.rsrpHistory,
                     userLocation = uiState.userLocation,
@@ -197,6 +205,25 @@ class MainActivity : ComponentActivity() {
         return coarse == PackageManager.PERMISSION_GRANTED &&
                 fine == PackageManager.PERMISSION_GRANTED &&
                 phone == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun importTowerCsv(uri: Uri, floridaOnly: Boolean) {
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                importStatusState.value = "Import started…"
+                val filter = if (floridaOnly) CellRepository.FLORIDA_TMOBILE_FILTER else null
+                val imported = contentResolver.openInputStream(uri)?.use { stream ->
+                    repository.importCsv(stream, filter) { parsed, kept ->
+                        importStatusState.value =
+                            "Scanned ${"%,d".format(parsed)} rows • kept ${"%,d".format(kept)} towers"
+                    }
+                } ?: 0
+                importStatusState.value = "Import complete: ${"%,d".format(imported)} towers added"
+            } catch (e: Exception) {
+                Log.e("MainActivity", "Tower import failed", e)
+                importStatusState.value = "Import failed: ${e.message}"
+            }
+        }
     }
 
     private fun backupDatabase() {
@@ -286,6 +313,8 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun MainAppScreen(
     repository: CellRepository,
+    importStatus: String? = null,
+    onImportCsv: (Uri, Boolean) -> Unit = { _, _ -> },
     currentCell: CellModel,
     rsrpHistory: List<Int>,
     userLocation: Pair<Double, Double>?,
@@ -441,6 +470,7 @@ fun MainAppScreen(
                         val coroutineScope = rememberCoroutineScope()
                         MapScreen(
                             cell = currentCell,
+                            logs = logs,
                             userLat = userLocation?.first,
                             userLon = userLocation?.second,
                             towerLat = towerLocation?.first,
@@ -484,7 +514,6 @@ fun MainAppScreen(
                         )
                     }
                     3 -> {
-                        val coroutineScope = rememberCoroutineScope()
                         SettingsScreen(
                             onSaveApiKey = { key ->
                                 context.getSharedPreferences("TowerLockPrefs", Context.MODE_PRIVATE)
@@ -513,14 +542,8 @@ fun MainAppScreen(
                             },
                             onBackupDb = onBackupDb,
                             onRestoreDb = onRestoreDb,
-                            onImportCsv = { uri ->
-                                coroutineScope.launch {
-                                    val imported = context.contentResolver.openInputStream(uri)?.use { stream ->
-                                        repository.importCsv(stream)
-                                    } ?: 0
-                                    Toast.makeText(context, "Imported $imported towers", Toast.LENGTH_SHORT).show()
-                                }
-                            }
+                            onImportCsv = onImportCsv,
+                            importStatus = importStatus
                         )
                     }
                     }

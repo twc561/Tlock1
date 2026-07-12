@@ -43,14 +43,16 @@ fun SettingsScreen(
     onSaveIconStyle: (String) -> Unit,
     onBackupDb: () -> Unit,
     onRestoreDb: () -> Unit,
-    onImportCsv: (Uri) -> Unit
+    onImportCsv: (Uri, Boolean) -> Unit,
+    importStatus: String? = null
 ) {
     val tl = TlTheme.colors
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("TowerLockPrefs", Context.MODE_PRIVATE) }
+    var importFloridaOnly by remember { mutableStateOf(prefs.getBoolean("import_filter_fl", true)) }
     val csvImportLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
-    ) { uri -> uri?.let(onImportCsv) }
+    ) { uri -> uri?.let { onImportCsv(it, importFloridaOnly) } }
 
     var openCellIdKey by remember { mutableStateOf(prefs.getString("opencellid_key", "") ?: "") }
     var isKeyVisible by remember { mutableStateOf(false) }
@@ -333,6 +335,52 @@ fun SettingsScreen(
                             checkedTrackColor = tl.emerald
                         ),
                         modifier = Modifier.testTag("enable_simulation_switch")
+                    )
+                }
+            }
+        }
+
+        // Drive Mode Section
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = tl.surface)
+        ) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    text = "Drive Mode — Tower Discovery",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = tl.textPrimary,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "Samples continuously while you drive, logs every serving cell with GPS, and " +
+                            "notifies you the first time you connect to a tower you've never seen before. " +
+                            "Overrides batched polling while enabled, so expect higher battery use.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = tl.textSecondary
+                )
+
+                var driveMode by remember { mutableStateOf(prefs.getBoolean("drive_mode", false)) }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Enable Drive Mode",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = tl.textPrimary
+                    )
+                    Switch(
+                        checked = driveMode,
+                        onCheckedChange = {
+                            driveMode = it
+                            prefs.edit().putBoolean("drive_mode", it).apply()
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = tl.onAccent,
+                            checkedTrackColor = tl.emerald
+                        )
                     )
                 }
             }
@@ -649,11 +697,36 @@ fun SettingsScreen(
                         color = tl.textPrimary
                     )
                     Text(
-                        text = "Import a CSV of known towers (radio, mcc, mnc, area, cid, lat, lon, range, address) " +
-                                "so they resolve locally without needing an API lookup.",
+                        text = "Import a tower CSV — including full OpenCelliD regional extracts " +
+                                "(.csv or .csv.gz) — so towers resolve locally without an API lookup. " +
+                                "Download the MCC 310 extract from opencellid.org (free account required).",
                         style = MaterialTheme.typography.bodySmall,
                         color = tl.textSecondary
                     )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Keep only T-Mobile (310-260) in Florida",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = tl.textPrimary,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Switch(
+                            checked = importFloridaOnly,
+                            onCheckedChange = {
+                                importFloridaOnly = it
+                                prefs.edit().putBoolean("import_filter_fl", it).apply()
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = tl.onAccent,
+                                checkedTrackColor = tl.emerald
+                            )
+                        )
+                    }
                     Spacer(modifier = Modifier.height(4.dp))
                     Button(
                         onClick = { csvImportLauncher.launch("*/*") },
@@ -667,6 +740,14 @@ fun SettingsScreen(
                         Icon(imageVector = Icons.Default.FileUpload, contentDescription = "Import CSV")
                         Spacer(modifier = Modifier.width(8.dp))
                         Text("Import Tower CSV")
+                    }
+                    importStatus?.let { status ->
+                        Text(
+                            text = status,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = tl.sky,
+                            fontWeight = FontWeight.SemiBold
+                        )
                     }
                 }
             }

@@ -39,7 +39,8 @@ data class CarrierInfo(
     val band: String,
     val arfcn: Int,
     val rsrp: Int,
-    val type: String // "PCC" (Primary), "SCC" (Secondary)
+    val type: String, // "PCC" (Primary), "SCC" (Secondary)
+    val bandwidthKhz: Int = 0 // downlink bandwidth; 0 = not reported
 )
 
 data class NeighborCell(
